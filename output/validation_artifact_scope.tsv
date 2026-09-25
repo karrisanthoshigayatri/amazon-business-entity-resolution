@@ -1,0 +1,8 @@
+metric	value
+validation_source1_count	1000
+artifact_source1_count	1000
+validation_ground_truth_match_count	3493
+artifact_ground_truth_match_count	13
+artifact_candidate_pair_count	39967
+target_window_restriction	approximate_target_rows=250000 (source.head(250000) applied in blocking._approximate_candidates() before similarity candidate generation; restricts which target records are searched for name_similarity and address_similarity strategies)
+validation_population_match	ALL_VALIDATION_SOURCE1_IDS_PRESENT__BUT__GROUND_TRUTH_MATCH_COVERAGE_BOUNDED (13 of 3493 true matches recoverable; artifact is BOUNDED_VALIDATION_ARTIFACT)
