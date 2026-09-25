@@ -16,3 +16,8 @@ coverage.xml
 
 # Keep output structure but ignore generated result files unless intentionally tracked
 output/*.tsv
+
+# Keep the competition dataset and derived analysis reports local
+dataset/
+output/dataset_analysis.txt
+6ab10eb3b23ba_student_resource.zip
