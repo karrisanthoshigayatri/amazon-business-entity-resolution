@@ -25,6 +25,7 @@ class PreprocessingTests(unittest.TestCase):
             normalize_business_name("Pvt. EFS Print Ventures Ltd."),
             "private efs print ventures limited",
         )
+        self.assertEqual(normalize_business_name("Acme Co."), "acme company")
 
     def test_name_normalization_preserves_unicode_content(self):
         self.assertEqual(
@@ -91,6 +92,10 @@ class PreprocessingTests(unittest.TestCase):
         self.assertEqual(result["business_name_normalized"].tolist(), ["acme llc", ""])
         self.assertEqual(result["has_name"].tolist(), [True, False])
         self.assertEqual(result["has_address"].tolist(), [True, False])
+        self.assertEqual(result["missing_name"].tolist(), [False, True])
+        self.assertEqual(result["missing_address"].tolist(), [False, True])
+        self.assertIn("name_tokens", result.columns)
+        self.assertIn("address_tokens", result.columns)
 
 
 if __name__ == "__main__":

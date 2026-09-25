@@ -1,83 +1,22 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
 
-
-LEGAL_SUFFIXES = {
-    "ltd": "limited",
-    "limited": "limited",
-    "inc": "incorporated",
-    "incorporated": "incorporated",
-    "corp": "corporation",
-    "corporation": "corporation",
-    "llc": "llc",
-    "pvt": "private",
-    "private": "private",
-}
-
-ADDRESS_ABBREVIATIONS = {
-    "st": "street",
-    "street": "street",
-    "rd": "road",
-    "road": "road",
-    "ave": "avenue",
-    "avenue": "avenue",
-    "blvd": "boulevard",
-    "boulevard": "boulevard",
-    "apt": "apartment",
-    "apartment": "apartment",
-    "no": "number",
-    "number": "number",
-}
-
-
-def _safe_text(value: Any) -> str:
-    if value is None:
-        return ""
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        pass
-    return str(value)
-
-
-def _normalize_characters(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", _safe_text(value)).casefold()
-    characters: list[str] = []
-    for character in text:
-        category = unicodedata.category(character)
-        if character.isalnum() or category.startswith("M") or character.isspace():
-            characters.append(character)
-        else:
-            characters.append(" ")
-    return re.sub(r"\s+", " ", "".join(characters)).strip()
-
-
-def normalize_business_name(text: Any) -> str:
-    """Normalize a business name while retaining meaningful tokens and suffixes."""
-    tokens = _normalize_characters(text).split()
-    return " ".join(LEGAL_SUFFIXES.get(token, token) for token in tokens)
-
-
-def normalize_business_address(text: Any) -> str:
-    """Normalize address formatting and conservative common abbreviations."""
-    tokens = _normalize_characters(text).split()
-    return " ".join(ADDRESS_ABBREVIATIONS.get(token, token) for token in tokens)
-
-
-def normalize_country(text: Any) -> str:
-    """Normalize country casing and spacing without restricting country values."""
-    return _normalize_characters(text)
+from .normalization import (
+    normalize_business_address,
+    normalize_business_address_series,
+    normalize_business_name,
+    normalize_business_name_series,
+    normalize_country,
+    normalize_country_series,
+)
 
 
 def preprocess_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the original record plus deterministic normalized fields."""
+    """Return one original record plus deterministic normalized fields."""
     original_name = record.get("business_name", "")
     original_address = record.get("business_address", "")
     normalized_name = normalize_business_name(original_name)
@@ -99,12 +38,31 @@ def preprocess_record(record: Mapping[str, Any]) -> dict[str, Any]:
             "address_length": len(normalized_address),
             "has_name": bool(normalized_name),
             "has_address": bool(normalized_address),
+            "missing_name": not bool(normalized_name),
+            "missing_address": not bool(normalized_address),
         }
     )
     return enriched
 
 
 def preprocess_dataframe(data: pd.DataFrame) -> pd.DataFrame:
-    """Copy a source DataFrame and append normalized and derived fields."""
-    records = [preprocess_record(record) for record in data.to_dict("records")]
-    return pd.DataFrame(records, index=data.index)
+    """Copy a source DataFrame and append normalized fields with vectorized pandas operations."""
+    result = data.copy()
+    names = result["business_name"] if "business_name" in result else pd.Series("", index=result.index)
+    addresses = result["business_address"] if "business_address" in result else pd.Series("", index=result.index)
+    countries = result["country"] if "country" in result else pd.Series("", index=result.index)
+
+    result["business_name_normalized"] = normalize_business_name_series(names)
+    result["business_address_normalized"] = normalize_business_address_series(addresses)
+    result["country_normalized"] = normalize_country_series(countries)
+    result["name_tokens"] = result["business_name_normalized"].str.split()
+    result["address_tokens"] = result["business_address_normalized"].str.split()
+    result["name_token_count"] = result["name_tokens"].str.len()
+    result["address_token_count"] = result["address_tokens"].str.len()
+    result["name_length"] = result["business_name_normalized"].str.len()
+    result["address_length"] = result["business_address_normalized"].str.len()
+    result["has_name"] = result["name_length"].gt(0)
+    result["has_address"] = result["address_length"].gt(0)
+    result["missing_name"] = ~result["has_name"]
+    result["missing_address"] = ~result["has_address"]
+    return result
