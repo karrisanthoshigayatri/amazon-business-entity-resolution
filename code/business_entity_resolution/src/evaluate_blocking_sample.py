@@ -158,6 +158,8 @@ def run_sample(sample_size: int = SAMPLE_SIZE) -> dict[str, object]:
     }
     for key, value in result.items():
         print(f"{key}={value}")
+    for key, value in recall.items():
+        print(f"recall_{key}={value}")
     return result
 
 

@@ -9,8 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.blocking import (
     BlockingConfig,
     combine_candidates,
+    generate_ngram_ids,
     generate_candidates,
     generate_candidates_for_source,
+    intersect_candidate_indices,
+    lookup_postings,
 )
 
 
@@ -87,6 +90,44 @@ class BlockingTests(unittest.TestCase):
             BlockingConfig(name_top_k=0, address_top_k=0),
         )
         self.assertLess(len(candidates), len(self.s1) * len(self.s2))
+
+    def test_ngram_ids_and_posting_lookup_are_integer_indexed(self):
+        target_matrix = generate_ngram_ids(["acme company", "different name"])
+        query_matrix = generate_ngram_ids(["acme company"])
+        results = lookup_postings(
+            query_matrix,
+            target_matrix,
+            query_countries=pd.Series(["us"]).to_numpy(),
+            target_countries=pd.Series(["us", "us"]).to_numpy(),
+            top_k=1,
+            batch_size=1,
+            max_candidates_per_query=10,
+        )
+        self.assertEqual(results[0].dtype, "int32")
+        self.assertEqual(results[0].tolist(), [0])
+
+    def test_integer_array_intersection_and_top_k(self):
+        result = intersect_candidate_indices(
+            pd.Series([1, 2, 2, 4]).to_numpy(),
+            pd.Series([2, 3, 4]).to_numpy(),
+        )
+        self.assertEqual(result.tolist(), [2, 4])
+        candidates, _ = generate_candidates_for_source(
+            self.s1,
+            self.s2,
+            BlockingConfig(name_top_k=1, address_top_k=1, approximate_target_rows=None),
+        )
+        approximate = candidates[candidates.strategy.str.contains("similarity")]
+        self.assertLessEqual(len(approximate), len(self.s1) * 2)
+
+    def test_batch_processing_preserves_source_separation(self):
+        candidates, _ = generate_candidates(
+            self.s1,
+            self.s2,
+            self.s3,
+            BlockingConfig(query_batch_size=1, name_top_k=1, address_top_k=1),
+        )
+        self.assertTrue(set(candidates.candidate_source).issubset({"S2", "S3"}))
 
 
 if __name__ == "__main__":

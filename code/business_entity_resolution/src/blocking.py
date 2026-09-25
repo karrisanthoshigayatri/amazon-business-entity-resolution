@@ -6,6 +6,8 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
+from sklearn.feature_extraction.text import HashingVectorizer
 
 from .normalization import (
     normalize_business_address_series,
@@ -19,17 +21,25 @@ class BlockingConfig:
     name_top_k: int = 10
     address_top_k: int = 10
     query_batch_size: int = 5_000
-    sample_size: int = 10_000
+    sample_size: int = 5_000
     ngram_size: int = 3
-    max_postings_per_ngram: int = 2_000
-    max_approx_candidates_per_query: int = 500
+    ngram_features: int = 2**18
     approximate_target_rows: int | None = 250_000
     max_exact_block_size: int | None = None
     approximate_max_target_rows: int | None = None
+    max_approx_candidates_per_query: int = 500
 
 
 def _empty_candidates() -> pd.DataFrame:
-    return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id", "candidate_source", "source", "strategy"])
+    return pd.DataFrame(
+        columns=[
+            "source1_entity_id",
+            "candidate_entity_id",
+            "candidate_source",
+            "source",
+            "strategy",
+        ]
+    )
 
 
 def _prepare(source1_df: pd.DataFrame, source_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -38,25 +48,32 @@ def _prepare(source1_df: pd.DataFrame, source_df: pd.DataFrame) -> tuple[pd.Data
         missing = required - set(frame.columns)
         if missing:
             raise ValueError(f"{label} is missing columns: {sorted(missing)}")
-    left = pd.DataFrame({
-        "source1_entity_id": source1_df["entity_id"].astype("string").reset_index(drop=True),
-        "name": normalize_business_name_series(source1_df["business_name"]).reset_index(drop=True),
-        "address": normalize_business_address_series(source1_df["business_address"]).reset_index(drop=True),
-        "country": normalize_country_series(source1_df["country"]).reset_index(drop=True),
-    })
-    right = pd.DataFrame({
-        "candidate_entity_id": source_df["entity_id"].astype("string").reset_index(drop=True),
-        "name": normalize_business_name_series(source_df["business_name"]).reset_index(drop=True),
-        "address": normalize_business_address_series(source_df["business_address"]).reset_index(drop=True),
-        "country": normalize_country_series(source_df["country"]).reset_index(drop=True),
-    })
+    left = pd.DataFrame(
+        {
+            "source1_entity_id": source1_df["entity_id"].astype("string").reset_index(drop=True),
+            "name": normalize_business_name_series(source1_df["business_name"]).reset_index(drop=True),
+            "address": normalize_business_address_series(source1_df["business_address"]).reset_index(drop=True),
+            "country": normalize_country_series(source1_df["country"]).reset_index(drop=True),
+        }
+    )
+    right = pd.DataFrame(
+        {
+            "candidate_entity_id": source_df["entity_id"].astype("string").reset_index(drop=True),
+            "name": normalize_business_name_series(source_df["business_name"]).reset_index(drop=True),
+            "address": normalize_business_address_series(source_df["business_address"]).reset_index(drop=True),
+            "country": normalize_country_series(source_df["country"]).reset_index(drop=True),
+        }
+    )
     return left, right
 
 
 def _frame(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
     if not rows:
         return _empty_candidates()
-    frame = pd.DataFrame(rows, columns=["source1_entity_id", "candidate_entity_id", "candidate_source", "strategy"])
+    frame = pd.DataFrame(
+        rows,
+        columns=["source1_entity_id", "candidate_entity_id", "candidate_source", "strategy"],
+    )
     frame["source"] = frame["candidate_source"]
     return frame[_empty_candidates().columns]
 
@@ -75,11 +92,14 @@ def _exact_index(source: pd.DataFrame, field: str, max_block_size: int | None) -
 def _exact_candidates(source1: pd.DataFrame, source: pd.DataFrame, source_label: str, field: str, strategy: str, max_block_size: int | None) -> pd.DataFrame:
     index = _exact_index(source, field, max_block_size)
     rows: list[tuple[str, str, str, str]] = []
+    target_ids = source["candidate_entity_id"].to_numpy(dtype=object)
     for source1_id, country, value in zip(source1["source1_entity_id"], source1["country"], source1[field]):
         if not value:
             continue
-        for target_index in index.get((country, value), []):
-            rows.append((source1_id, source.iloc[target_index]["candidate_entity_id"], source_label, strategy))
+        rows.extend(
+            (source1_id, target_ids[target_index], source_label, strategy)
+            for target_index in index.get((country, value), [])
+        )
     return _frame(rows)
 
 
@@ -91,57 +111,95 @@ def generate_exact_address_candidates(source1: pd.DataFrame, source: pd.DataFram
     return _exact_candidates(source1, source, source_label, "address", "exact_address", max_block_size)
 
 
-def _ngrams(value: str, ngram_size: int) -> set[str]:
-    padded = f"  {value}  "
-    if len(padded) <= ngram_size:
-        return {padded}
-    return {padded[index:index + ngram_size] for index in range(len(padded) - ngram_size + 1)}
+def generate_ngram_ids(values: Iterable[str], ngram_size: int = 3, ngram_features: int = 2**18) -> sparse.csr_matrix:
+    """Encode character n-grams as deterministic integer sparse feature IDs."""
+    vectorizer = HashingVectorizer(
+        analyzer="char",
+        ngram_range=(ngram_size, ngram_size),
+        n_features=ngram_features,
+        binary=True,
+        norm=None,
+        alternate_sign=False,
+        lowercase=False,
+        dtype=np.float32,
+    )
+    return vectorizer.transform(pd.Series(values, dtype="string").fillna("")) .tocsr()
+
+
+def intersect_candidate_indices(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Return sorted unique integer intersections without Python sets."""
+    return np.intersect1d(left, right, assume_unique=False)
+
+
+def lookup_postings(
+    query_matrix: sparse.csr_matrix,
+    target_matrix: sparse.csr_matrix,
+    query_countries: np.ndarray,
+    target_countries: np.ndarray,
+    top_k: int,
+    batch_size: int,
+    max_candidates_per_query: int,
+) -> list[np.ndarray]:
+    """Retrieve top-k shared-ngram targets from sparse products, by country."""
+    results: list[np.ndarray] = [np.empty(0, dtype=np.int32) for _ in range(query_matrix.shape[0])]
+    country_values = np.unique(query_countries)
+    for country in country_values:
+        if not country:
+            continue
+        query_indices = np.flatnonzero(query_countries == country)
+        target_indices = np.flatnonzero(target_countries == country)
+        if len(query_indices) == 0 or len(target_indices) == 0:
+            continue
+        country_target = target_matrix[target_indices]
+        target_lengths = np.asarray(country_target.getnnz(axis=1)).ravel()
+        for start in range(0, len(query_indices), batch_size):
+            batch_indices = query_indices[start:start + batch_size]
+            scores = (query_matrix[batch_indices] @ country_target.T).tocsr()
+            query_lengths = np.asarray(query_matrix[batch_indices].getnnz(axis=1)).ravel()
+            for row_number in range(scores.shape[0]):
+                row = scores.getrow(row_number)
+                if row.nnz == 0:
+                    continue
+                candidate_positions = row.indices
+                intersections = row.data
+                unions = query_lengths[row_number] + target_lengths[candidate_positions] - intersections
+                similarities = intersections / np.maximum(unions, 1)
+                limit = min(top_k, max_candidates_per_query, len(similarities))
+                if limit < len(similarities):
+                    chosen = np.argpartition(similarities, -limit)[-limit:]
+                    chosen = chosen[np.argsort(similarities[chosen])[::-1]]
+                else:
+                    chosen = np.argsort(similarities)[::-1][:limit]
+                results[batch_indices[row_number]] = target_indices[candidate_positions[chosen]].astype(np.int32)
+    return results
 
 
 def _approximate_candidates(source1: pd.DataFrame, source: pd.DataFrame, source_label: str, field: str, strategy: str, top_k: int, config: BlockingConfig) -> pd.DataFrame:
     if top_k <= 0:
         return _empty_candidates()
     target = source if config.approximate_target_rows is None else source.head(config.approximate_target_rows)
-    target_ids = target["candidate_entity_id"].to_numpy(dtype=object)
-    target_countries = target["country"].to_numpy(dtype=object)
     target_values = target[field].to_numpy(dtype=object)
-    query_ids = source1["source1_entity_id"].to_numpy(dtype=object)
-    query_countries = source1["country"].to_numpy(dtype=object)
     query_values = source1[field].to_numpy(dtype=object)
-    postings: dict[str, list[int]] = defaultdict(list)
-    for row_number, value in enumerate(target_values):
-        if not value:
-            continue
-        for gram in _ngrams(value, config.ngram_size):
-            if len(postings[gram]) < config.max_postings_per_ngram:
-                postings[gram].append(row_number)
-
-    rows: list[tuple[str, str, str, str]] = []
-    for start in range(0, len(source1), config.query_batch_size):
-        end = min(start + config.query_batch_size, len(query_values))
-        for query_index in range(start, end):
-            value = query_values[query_index]
-            if not value:
-                continue
-            candidate_indices: set[int] = set()
-            for gram in _ngrams(value, config.ngram_size):
-                candidate_indices.update(postings.get(gram, []))
-                if len(candidate_indices) >= config.max_approx_candidates_per_query:
-                    break
-            if not candidate_indices:
-                continue
-            scored: list[tuple[float, int]] = []
-            query_grams = _ngrams(value, config.ngram_size)
-            for candidate_index in candidate_indices:
-                if target_countries[candidate_index] != query_countries[query_index]:
-                    continue
-                target_grams = _ngrams(target_values[candidate_index], config.ngram_size)
-                union = len(query_grams | target_grams)
-                score = len(query_grams & target_grams) / union if union else 0.0
-                scored.append((score, candidate_index))
-            scored.sort(reverse=True)
-            for _, candidate_index in scored[:top_k]:
-                rows.append((query_ids[query_index], target_ids[candidate_index], source_label, strategy))
+    target_matrix = generate_ngram_ids(target_values, config.ngram_size, config.ngram_features)
+    query_matrix = generate_ngram_ids(query_values, config.ngram_size, config.ngram_features)
+    target_ids = target["candidate_entity_id"].to_numpy(dtype=object)
+    query_ids = source1["source1_entity_id"].to_numpy(dtype=object)
+    target_countries = target["country"].to_numpy(dtype=object)
+    query_countries = source1["country"].to_numpy(dtype=object)
+    matched_indices = lookup_postings(
+        query_matrix,
+        target_matrix,
+        query_countries,
+        target_countries,
+        top_k,
+        config.query_batch_size,
+        config.max_approx_candidates_per_query,
+    )
+    rows = [
+        (query_ids[query_index], target_ids[target_index], source_label, strategy)
+        for query_index, target_indices in enumerate(matched_indices)
+        for target_index in target_indices
+    ]
     return _frame(rows)
 
 
@@ -210,6 +268,10 @@ def evaluate_candidate_recall(candidates: pd.DataFrame, ground_truth: pd.DataFra
                 missed.append((source1_id, candidate_id))
     total = sum(totals.values())
     return {
+        "source2_true_matches": totals["S2"],
+        "source2_recovered": found["S2"],
+        "source3_true_matches": totals["S3"],
+        "source3_recovered": found["S3"],
         "source2_recall": found["S2"] / totals["S2"] if totals["S2"] else 1.0,
         "source3_recall": found["S3"] / totals["S3"] if totals["S3"] else 1.0,
         "overall_recall": (found["S2"] + found["S3"]) / total if total else 1.0,
