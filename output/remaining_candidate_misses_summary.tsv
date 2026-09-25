@@ -1,0 +1,34 @@
+metric	value
+total_true_matches	3493
+candidate_present	3199
+candidate_missing	294
+full_candidate_recall	0.9158316633
+candidate_missing_rate	0.0841683367
+candidate_missing_s2	110
+candidate_missing_s3	184
+mean_name_similarity_missing	0.6189
+mean_address_similarity_missing	0.4125
+name_exact_match_count_in_missing	0
+address_exact_match_count_in_missing	0
+name_similarity_above_0_75_in_missing	126
+address_similarity_above_0_75_in_missing	22
+	
+--- miss_category_counts ---	
+miss_category::missing_address_field	57 (19.39%)
+miss_category::address_digit_variation	43 (14.63%)
+miss_category::both_name_and_address_weak	38 (12.93%)
+miss_category::address_variation_near_threshold	34 (11.56%)
+miss_category::name_variation_no_shared_tokens	32 (10.88%)
+miss_category::moderate_similarity_below_retrieval_threshold	31 (10.54%)
+miss_category::address_token_order_or_variation	24 (8.16%)
+miss_category::near_match_outside_top_k	10 (3.4%)
+miss_category::address_similarity_below_top_k_threshold	10 (3.4%)
+miss_category::name_variation_near_threshold	10 (3.4%)
+miss_category::name_token_order_variation	4 (1.36%)
+miss_category::name_abbreviation_or_suffix_variation	1 (0.34%)
+	
+--- failed_strategy_counts ---	
+failed_strategy::address_similarity	247 (84.01%)
+failed_strategy::exact_address_blocking	206 (70.07%)
+failed_strategy::name_similarity	126 (42.86%)
+failed_strategy::exact_name_blocking	85 (28.91%)

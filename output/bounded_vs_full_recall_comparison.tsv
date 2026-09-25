@@ -1,0 +1,12 @@
+metric	bounded_value	full_value	change
+run_mode	BOUNDED(250000)	FULL	N/A
+validation_source1_count	1000	1000	0
+total_ground_truth_matches	3493.0	3493	+0
+candidate_present_matches	13.0	3199	+3186
+candidate_missing_matches	3480.0	294	-3186
+candidate_generation_recall	0.0037217291726309	0.9158316633	+0.91211
+average_candidates_per_source1	39.967	44.262	+4.295
+median_candidates_per_source1	N/A	38.5	N/A
+maximum_candidates_per_source1	N/A	396	N/A
+candidate_reduction_ratio	1.0 (reference)	1.1075	+0.107464
+runtime	N/A	4128.87s	N/A

@@ -28,6 +28,39 @@ class BlockingConfig:
     max_exact_block_size: int | None = None
     approximate_max_target_rows: int | None = None
     max_approx_candidates_per_query: int = 500
+    # When approximate_target_rows is None (FULL mode), the target source can
+    # have millions of rows.  Building one giant sparse matrix for all of them
+    # at once is infeasible.  target_chunk_size splits the target into chunks
+    # of this many rows and merges per-query top-K results across chunks.
+    # Set to None to disable chunking (only safe when target is small).
+    target_chunk_size: int | None = 500_000
+
+
+# ---------------------------------------------------------------------------
+# Named configuration presets
+# ---------------------------------------------------------------------------
+
+# BOUNDED mode: similarity blocking inspects only the first 250 000 target
+# rows.  Useful for fast iteration and debugging, but candidate recall is
+# artificially limited for datasets larger than that window.
+BOUNDED_BLOCKING_CONFIG = BlockingConfig(approximate_target_rows=250_000, target_chunk_size=None)
+
+# FULL mode: no target-row truncation.  Every record in the candidate source
+# file is considered during similarity blocking.  The target is processed in
+# chunks of target_chunk_size rows so that memory stays bounded even for
+# sources with millions of rows.
+FULL_VALIDATION_CONFIG = BlockingConfig(approximate_target_rows=None, target_chunk_size=500_000)
+
+
+def blocking_mode(config: BlockingConfig) -> str:
+    """Return a human-readable label for the blocking mode.
+
+    Returns ``"FULL"`` when no target-row limit is applied, or
+    ``"BOUNDED(n)"`` where *n* is the row limit.
+    """
+    if config.approximate_target_rows is None:
+        return "FULL"
+    return f"BOUNDED({config.approximate_target_rows})"
 
 
 def _empty_candidates() -> pd.DataFrame:
@@ -178,28 +211,98 @@ def _approximate_candidates(source1: pd.DataFrame, source: pd.DataFrame, source_
     if top_k <= 0:
         return _empty_candidates()
     target = source if config.approximate_target_rows is None else source.head(config.approximate_target_rows)
-    target_values = target[field].to_numpy(dtype=object)
+
     query_values = source1[field].to_numpy(dtype=object)
-    target_matrix = generate_ngram_ids(target_values, config.ngram_size, config.ngram_features)
-    query_matrix = generate_ngram_ids(query_values, config.ngram_size, config.ngram_features)
-    target_ids = target["candidate_entity_id"].to_numpy(dtype=object)
     query_ids = source1["source1_entity_id"].to_numpy(dtype=object)
-    target_countries = target["country"].to_numpy(dtype=object)
     query_countries = source1["country"].to_numpy(dtype=object)
-    matched_indices = lookup_postings(
-        query_matrix,
-        target_matrix,
-        query_countries,
-        target_countries,
-        top_k,
-        config.query_batch_size,
-        config.max_approx_candidates_per_query,
-    )
-    rows = [
-        (query_ids[query_index], target_ids[target_index], source_label, strategy)
-        for query_index, target_indices in enumerate(matched_indices)
-        for target_index in target_indices
-    ]
+    query_matrix = generate_ngram_ids(query_values, config.ngram_size, config.ngram_features)
+
+    n_queries = len(query_ids)
+    chunk_size = config.target_chunk_size
+
+    # When chunking is disabled or the target fits in one chunk, use the
+    # original single-pass path (preserves existing behaviour for bounded mode).
+    if chunk_size is None or len(target) <= chunk_size:
+        target_values = target[field].to_numpy(dtype=object)
+        target_matrix = generate_ngram_ids(target_values, config.ngram_size, config.ngram_features)
+        target_ids = target["candidate_entity_id"].to_numpy(dtype=object)
+        target_countries = target["country"].to_numpy(dtype=object)
+        matched_indices = lookup_postings(
+            query_matrix,
+            target_matrix,
+            query_countries,
+            target_countries,
+            top_k,
+            config.query_batch_size,
+            config.max_approx_candidates_per_query,
+        )
+        rows = [
+            (query_ids[qi], target_ids[ti], source_label, strategy)
+            for qi, target_indices in enumerate(matched_indices)
+            for ti in target_indices
+        ]
+        return _frame(rows)
+
+    # --- Chunked path: process target in slices, keep per-query top-K ------
+    # best_scores[qi] -> dict { target_global_index -> similarity_score }
+    # We accumulate up to max_approx_candidates_per_query candidates per query
+    # across all chunks, then select the final top_k by score.
+    best: list[dict[int, float]] = [{} for _ in range(n_queries)]
+
+    target_reset = target.reset_index(drop=True)
+    n_target = len(target_reset)
+    for chunk_start in range(0, n_target, chunk_size):
+        chunk = target_reset.iloc[chunk_start : chunk_start + chunk_size]
+        chunk_values = chunk[field].to_numpy(dtype=object)
+        chunk_ids_local = np.arange(len(chunk), dtype=np.int32)
+        chunk_countries = chunk["country"].to_numpy(dtype=object)
+        chunk_matrix = generate_ngram_ids(chunk_values, config.ngram_size, config.ngram_features)
+
+        chunk_matched = lookup_postings(
+            query_matrix,
+            chunk_matrix,
+            query_countries,
+            chunk_countries,
+            top_k,
+            config.query_batch_size,
+            config.max_approx_candidates_per_query,
+        )
+        # chunk_matched[qi] contains LOCAL indices into this chunk.
+        # We need to compute per-pair similarity to score them for merging.
+        chunk_lengths = np.asarray(chunk_matrix.getnnz(axis=1)).ravel()
+        query_lengths = np.asarray(query_matrix.getnnz(axis=1)).ravel()
+
+        for qi, local_indices in enumerate(chunk_matched):
+            if len(local_indices) == 0:
+                continue
+            global_indices = local_indices + chunk_start  # offset into full target
+            # Recompute similarities for these pairs to get scores for merging
+            q_row = query_matrix[qi]
+            chunk_sub = chunk_matrix[local_indices]
+            intersections = np.asarray(
+                (q_row @ chunk_sub.T).todense()
+            ).ravel().astype(np.float32)
+            unions = (
+                query_lengths[qi]
+                + chunk_lengths[local_indices]
+                - intersections
+            )
+            sims = intersections / np.maximum(unions, 1)
+            for g_idx, sim in zip(global_indices.tolist(), sims.tolist()):
+                existing = best[qi].get(g_idx, -1.0)
+                if sim > existing:
+                    best[qi][g_idx] = float(sim)
+
+    # Select final top_k per query by score
+    target_ids_full = target_reset["candidate_entity_id"].to_numpy(dtype=object)
+    rows = []
+    for qi, score_map in enumerate(best):
+        if not score_map:
+            continue
+        limit = min(top_k, config.max_approx_candidates_per_query, len(score_map))
+        sorted_pairs = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        for g_idx, _ in sorted_pairs:
+            rows.append((query_ids[qi], target_ids_full[g_idx], source_label, strategy))
     return _frame(rows)
 
 

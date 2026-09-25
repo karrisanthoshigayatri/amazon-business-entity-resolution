@@ -1,0 +1,16 @@
+metric	value
+run_mode	FULL
+validation_source1_count	1000
+total_ground_truth_matches	3493
+candidate_present_matches	3199
+candidate_missing_matches	294
+candidate_generation_recall	0.9158316633
+average_candidates_per_source1	44.262
+median_candidates_per_source1	38.5
+maximum_candidates_per_source1	396
+candidate_reduction_ratio	1.1075
+runtime_seconds	4128.87
+peak_memory_mb	5649.05
+target_row_truncation	NONE (approximate_target_rows=None)
+train_source2_total_rows	5034616
+train_source3_total_rows	5285603
