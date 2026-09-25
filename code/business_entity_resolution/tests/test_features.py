@@ -79,6 +79,8 @@ class FeatureTests(unittest.TestCase):
             "address_char_similarity", "country_exact_match", "name_missing_s1",
             "name_missing_target", "address_missing_s1", "address_missing_target",
             "same_source_indicator", "name_and_address_exact", "name_or_address_exact",
+            "normalized_name_exact", "normalized_address_exact", "address_digit_overlap",
+            "strong_name_weak_address", "weak_name_strong_address", "both_name_address_missing",
         }
         self.assertTrue(expected.issubset(features.columns))
 

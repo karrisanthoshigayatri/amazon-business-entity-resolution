@@ -6,7 +6,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.evaluate import evaluate_predictions, evaluate_persisted_validation_predictions
+from src.evaluate import (
+    evaluate_predictions,
+    evaluate_persisted_validation_predictions,
+    tune_persisted_thresholds,
+)
 
 
 class EvaluationTests(unittest.TestCase):
@@ -97,6 +101,33 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result["false_positive_count"], 1)
         self.assertEqual(result["false_negative_count"], 0)
         self.assertEqual(result["validation_entity_count"], 2)
+
+    def test_multiple_thresholds_and_best_threshold(self):
+        persisted = pd.DataFrame(
+            [
+                ["S1-1", "S2-1", "S2", 0.90, 1],
+                ["S1-1", "S2-2", "S2", 0.20, 0],
+                ["S1-2", "S2-3", "S2", 0.20, 0],
+            ],
+            columns=[
+                "source1_entity_id", "candidate_entity_id", "candidate_source",
+                "match_probability", "ground_truth_label",
+            ],
+        )
+        comparison, tied = tune_persisted_thresholds(persisted, [0.2, 0.9])
+        self.assertEqual(comparison.shape[0], 2)
+        self.assertIn(0.9, tied)
+
+    def test_tied_thresholds_are_all_returned(self):
+        persisted = pd.DataFrame(
+            [["S1-1", "S2-1", "S2", 0.9, 0]],
+            columns=[
+                "source1_entity_id", "candidate_entity_id", "candidate_source",
+                "match_probability", "ground_truth_label",
+            ],
+        )
+        _, tied = tune_persisted_thresholds(persisted, [0.1, 0.5, 0.9])
+        self.assertEqual(tied, [0.1, 0.5, 0.9])
 
 
 if __name__ == "__main__":

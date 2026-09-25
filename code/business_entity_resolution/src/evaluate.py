@@ -15,6 +15,16 @@ REQUIRED_PREDICTION_COLUMNS = {
 }
 REQUIRED_PERSISTED_COLUMNS = REQUIRED_PREDICTION_COLUMNS | {"ground_truth_label"}
 REQUIRED_GROUND_TRUTH_COLUMNS = {"source1_entity_id", "matched_entity_ids"}
+DEFAULT_THRESHOLDS = tuple(round(value, 2) for value in np.arange(0.10, 1.00, 0.05))
+THRESHOLD_RESULT_COLUMNS = [
+    "threshold",
+    "macro_precision",
+    "macro_recall",
+    "macro_f0_5",
+    "total_TP",
+    "total_FP",
+    "total_FN",
+]
 
 
 def _require_columns(data: pd.DataFrame, required: set[str], label: str) -> None:
@@ -177,3 +187,41 @@ def evaluate_persisted_validation_predictions(
             "entities absent from the persisted candidate pairs."
         ),
     }
+
+
+def tune_persisted_thresholds(
+    persisted_predictions: pd.DataFrame,
+    thresholds: Iterable[float] = DEFAULT_THRESHOLDS,
+    output_path: str | None = None,
+    selected_threshold_path: str | None = None,
+) -> tuple[pd.DataFrame, list[float]]:
+    """Evaluate fixed thresholds and optionally persist the comparison table."""
+    threshold_values = [float(value) for value in thresholds]
+    if not threshold_values:
+        raise ValueError("at least one threshold is required")
+    rows = []
+    for threshold in threshold_values:
+        result = evaluate_persisted_validation_predictions(persisted_predictions, threshold)
+        rows.append(
+            {
+                "threshold": threshold,
+                "macro_precision": result["macro_precision"],
+                "macro_recall": result["macro_recall"],
+                "macro_f0_5": result["macro_f0_5"],
+                "total_TP": result["true_positive_count"],
+                "total_FP": result["false_positive_count"],
+                "total_FN": result["false_negative_count"],
+            }
+        )
+    comparison = pd.DataFrame(rows, columns=THRESHOLD_RESULT_COLUMNS)
+    best_score = comparison["macro_f0_5"].max()
+    tied = comparison.loc[
+        np.isclose(comparison["macro_f0_5"], best_score, rtol=0, atol=1e-12),
+        "threshold",
+    ].tolist()
+    if output_path is not None:
+        comparison.to_csv(output_path, sep="\t", index=False)
+    if selected_threshold_path is not None:
+        with open(selected_threshold_path, "w", encoding="ascii", newline="\n") as handle:
+            handle.write(f"{min(tied):.2f}\n")
+    return comparison, tied

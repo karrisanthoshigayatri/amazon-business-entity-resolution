@@ -169,6 +169,7 @@ def build_pair_features(
 
     features = candidate_frame[IDENTIFIER_COLUMNS].copy()
     features["name_exact_match"] = candidate_frame["s1_name"].eq(candidate_frame["target_name"]).astype(np.int8)
+    features["normalized_name_exact"] = features["name_exact_match"]
     features["name_token_jaccard"] = name_jaccard
     features["name_char_similarity"] = _char_similarity(candidate_frame["s1_name"], candidate_frame["target_name"])
     if include_tfidf:
@@ -178,12 +179,14 @@ def build_pair_features(
     features["name_token_count_difference"] = np.abs(candidate_frame["s1_name"].str.split().str.len().to_numpy() - candidate_frame["target_name"].str.split().str.len().to_numpy())
     features["shared_name_token_count"] = name_shared
     features["address_exact_match"] = candidate_frame["s1_address"].eq(candidate_frame["target_address"]).astype(np.int8)
+    features["normalized_address_exact"] = features["address_exact_match"]
     features["address_token_jaccard"] = address_jaccard
     features["address_char_similarity"] = _char_similarity(candidate_frame["s1_address"], candidate_frame["target_address"])
     features["address_length_difference"] = np.abs(s1_address_length - target_address_length)
     features["address_length_ratio"] = _safe_ratio(s1_address_length, target_address_length)
     features["shared_address_token_count"] = address_shared
     features["shared_digit_count"] = _shared_digit_count(candidate_frame["s1_address"], candidate_frame["target_address"])
+    features["address_digit_overlap"] = features["shared_digit_count"]
     features["country_exact_match"] = candidate_frame["s1_country"].eq(candidate_frame["target_country"]).astype(np.int8)
     features["name_missing_s1"] = candidate_frame["s1_name"].eq("").astype(np.int8)
     features["name_missing_target"] = candidate_frame["target_name"].eq("").astype(np.int8)
@@ -192,6 +195,18 @@ def build_pair_features(
     features["same_source_indicator"] = features["candidate_source"].eq("S2").astype(np.int8)
     features["name_and_address_exact"] = (features["name_exact_match"] & features["address_exact_match"]).astype(np.int8)
     features["name_or_address_exact"] = (features["name_exact_match"] | features["address_exact_match"]).astype(np.int8)
+    strong_name = features["name_char_similarity"].ge(0.75) | features["name_exact_match"].eq(1)
+    weak_address = features["address_char_similarity"].lt(0.50) | features["address_missing_target"].eq(1)
+    weak_name = features["name_char_similarity"].lt(0.50) | features["name_missing_target"].eq(1)
+    strong_address = features["address_char_similarity"].ge(0.75) | features["address_exact_match"].eq(1)
+    features["strong_name_weak_address"] = (strong_name & weak_address).astype(np.int8)
+    features["weak_name_strong_address"] = (weak_name & strong_address).astype(np.int8)
+    features["both_name_address_missing"] = (
+        features["name_missing_s1"].eq(1)
+        & features["name_missing_target"].eq(1)
+        & features["address_missing_s1"].eq(1)
+        & features["address_missing_target"].eq(1)
+    ).astype(np.int8)
     return features
 
 
