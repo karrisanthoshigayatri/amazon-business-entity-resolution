@@ -1,0 +1,16 @@
+metric	baseline	experimental	absolute_change	percentage_change
+baseline_name_top_k	10	20	+10	+100.0000%
+baseline_address_top_k	10	20	+10	+100.0000%
+total_ground_truth_matches	3493	3493	+0	+0.0000%
+candidate_present	3199	3253	+54	+1.6880%
+candidate_missing	294	240	-54	-18.3673%
+candidate_recall	0.9158316633	0.9312911537	+0.0154595	+1.6880%
+total_candidate_pairs	44262	82112	+37850	+85.5135%
+average_candidates_per_s1	44.262	82.112	+37.85	+85.5135%
+median_candidates_per_s1	38.5	78.0	+39.5	+102.5974%
+maximum_candidates_per_s1	396	416	+20	+5.0505%
+candidate_set_growth_pct	0.0%	+85.5135%	N/A	N/A
+recovered_from_294_misses	0	54	+54	N/A
+still_missing	294	240	-54	-18.3673%
+runtime_seconds	4128.87	4042.2	-86.67	-2.0991%
+peak_memory_mb	5649.05	5455.87	-193.18	-3.4197%
