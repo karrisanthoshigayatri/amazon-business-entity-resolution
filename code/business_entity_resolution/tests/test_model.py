@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,7 +7,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.model import split_by_source1_entity, train_baseline_model
+from src.model import (
+    VALIDATION_PREDICTION_COLUMNS,
+    persist_validation_predictions,
+    split_by_source1_entity,
+    train_baseline_model,
+)
 
 
 class ModelTests(unittest.TestCase):
@@ -45,6 +51,20 @@ class ModelTests(unittest.TestCase):
         self.assertIn("match_probability", result.validation_features.columns)
         self.assertTrue(result.validation_features.match_probability.between(0, 1).all())
         self.assertEqual(result.diagnostics["class_weight"], "balanced_subsample")
+
+    def test_persisted_validation_predictions_have_required_schema(self):
+        result = train_baseline_model(
+            self._features(), n_estimators=10, max_depth=4, n_jobs=1
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = persist_validation_predictions(result, Path(directory) / "validation.tsv")
+            persisted = pd.read_csv(path, sep="\t")
+        self.assertEqual(persisted.columns.tolist(), VALIDATION_PREDICTION_COLUMNS)
+        self.assertEqual(len(persisted), len(result.validation_features))
+        self.assertFalse(persisted.isna().any().any())
+        self.assertTrue(persisted["candidate_source"].isin({"S2", "S3"}).all())
+        self.assertTrue(persisted["match_probability"].between(0, 1).all())
+        self.assertTrue(persisted["ground_truth_label"].isin({0, 1}).all())
 
 
 if __name__ == "__main__":

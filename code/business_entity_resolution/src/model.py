@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,13 @@ from .features import IDENTIFIER_COLUMNS
 
 LABEL_COLUMN = "label"
 MODEL_RANDOM_STATE = 42
+VALIDATION_PREDICTION_COLUMNS = [
+    "source1_entity_id",
+    "candidate_entity_id",
+    "candidate_source",
+    "match_probability",
+    "ground_truth_label",
+]
 
 
 @dataclass
@@ -124,6 +132,34 @@ def train_baseline_model(
         validation_features=validation_output,
         diagnostics=diagnostics,
     )
+
+
+def persist_validation_predictions(
+    result: BaselineModelResult,
+    output_path: str | Path,
+) -> Path:
+    """Persist the exact in-memory validation predictions as a local TSV artifact."""
+    required = set(IDENTIFIER_COLUMNS + [LABEL_COLUMN, "match_probability"])
+    missing = required - set(result.validation_features.columns)
+    if missing:
+        raise ValueError(f"validation result is missing columns: {sorted(missing)}")
+
+    output = result.validation_features[
+        IDENTIFIER_COLUMNS + ["match_probability", LABEL_COLUMN]
+    ].rename(columns={LABEL_COLUMN: "ground_truth_label"})
+    if output[VALIDATION_PREDICTION_COLUMNS].isna().any().any():
+        raise ValueError("validation predictions contain missing required values")
+    if not output["candidate_source"].isin({"S2", "S3"}).all():
+        raise ValueError("candidate_source must contain only S2 or S3")
+    if not output["match_probability"].between(0, 1).all():
+        raise ValueError("match_probability values must be between 0 and 1")
+    if not output["ground_truth_label"].isin({0, 1}).all():
+        raise ValueError("ground_truth_label values must be 0 or 1")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(output_path, sep="\t", index=False)
+    return output_path
 
 
 # Short aliases for callers that prefer stage terminology.
